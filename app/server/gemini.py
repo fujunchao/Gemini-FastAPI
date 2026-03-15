@@ -41,6 +41,7 @@ from app.models.gemini_models import (
     GeminiFunctionCall,
     GeminiGenerateContentRequest,
     GeminiGenerateContentResponse,
+    GeminiInlineData,
     GeminiModelInfo,
     GeminiModelListResponse,
     GeminiPart,
@@ -55,12 +56,18 @@ from app.server.chat import (
     _find_reusable_session,
     _get_available_models,
     _get_model_by_name,
+    _image_to_base64,
     _persist_conversation,
     _prepare_messages_for_model,
     _process_llm_output,
     _send_with_split,
 )
-from app.server.middleware import get_temp_dir, verify_gemini_api_key
+from app.server.middleware import (
+    get_image_store_dir,
+    get_image_token,
+    get_temp_dir,
+    verify_gemini_api_key,
+)
 from app.services import GeminiClientPool, GeminiClientWrapper, LMDBConversationStore
 
 router = APIRouter()
@@ -261,12 +268,21 @@ def _to_gemini_response(
     thoughts: str | None,
     usage_tuple: tuple[int, int, int, int],
     model_name: str,
+    image_parts: list[GeminiPart] | None = None,
 ) -> GeminiGenerateContentResponse:
     """将内部处理结果转换为 Gemini API 响应。"""
     parts: list[GeminiPart] = []
 
+    # 思考内容 → <think> 标签包裹的 text part
+    if thoughts:
+        parts.append(GeminiPart(text=f"<think>{thoughts}</think>"))
+
     if visible_text:
         parts.append(GeminiPart(text=visible_text))
+
+    # 图片 → inlineData parts
+    if image_parts:
+        parts.extend(image_parts)
 
     for tc in tool_calls:
         fn = tc.function if hasattr(tc, "function") else tc.get("function", {})
@@ -463,6 +479,32 @@ async def gemini_generate_content(
         thoughts, raw_clean, structured_requirement
     )
 
+    # 图片处理: 收集 Gemini 返回的图片, 转为 inlineData parts + markdown URL
+    image_parts: list[GeminiPart] = []
+    seen_hashes: set[str] = set()
+    image_store = get_image_store_dir()
+    base_url = str(raw_request.base_url).rstrip("/")
+    for image in resp.images or []:
+        try:
+            b64_str, _w, _h, fname, file_hash = await _image_to_base64(image, image_store)
+            if file_hash in seen_hashes:
+                (image_store / fname).unlink(missing_ok=True)
+                continue
+            seen_hashes.add(file_hash)
+            # 从文件名后缀推导 MIME 类型
+            suffix = Path(fname).suffix.lower()
+            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+            mime_type = mime_map.get(suffix, "image/png")
+            image_parts.append(
+                GeminiPart(inlineData=GeminiInlineData(mimeType=mime_type, data=b64_str))
+            )
+            # 存储用 markdown URL (用于 LMDB 会话持久化)
+            token = get_image_token(fname)
+            img_url = f"{base_url}/images/{fname}?token={token}"
+            storage_output += f"\n\n![{fname}]({img_url})"
+        except Exception as exc:
+            logger.warning(f"[Gemini API] Failed to process image: {exc}")
+
     usage_tuple = _calculate_usage(messages, visible_output, tool_calls, thoughts)
 
     _persist_conversation(
@@ -476,7 +518,9 @@ async def gemini_generate_content(
         thoughts,
     )
 
-    gemini_resp = _to_gemini_response(visible_output, tool_calls, thoughts, usage_tuple, model_name)
+    gemini_resp = _to_gemini_response(
+        visible_output, tool_calls, thoughts, usage_tuple, model_name, image_parts
+    )
     return gemini_resp
 
 
@@ -560,6 +604,7 @@ async def gemini_stream_generate_content(
         client_wrapper=client,
         session=session,
         structured_requirement=structured_requirement,
+        base_url=str(raw_request.base_url).rstrip("/"),
     )
 
 
@@ -573,24 +618,68 @@ def _create_gemini_streaming_response(
     client_wrapper: GeminiClientWrapper,
     session,
     structured_requirement=None,
+    base_url: str = "",
 ) -> StreamingResponse:
     """创建 Gemini 格式的 SSE 流式响应。"""
 
     async def generate_stream():
         full_thoughts, full_text = "", ""
         last_chunk: ModelOutput | None = None
+        all_images: list[Any] = []  # 收集所有 chunk 的图片 (url 去重)
+        seen_image_urls: set[str] = set()
+        thinking_started = False  # 跟踪是否已发送 <think> 开始标签
         suppressor = StreamingOutputFilter()
 
         try:
             async for chunk in generator:
                 last_chunk = chunk
 
-                # 思考增量
+                # 收集图片 (按 url 去重, 同 OpenAI 路径)
+                if chunk.images:
+                    for img in chunk.images:
+                        if img.url not in seen_image_urls:
+                            all_images.append(img)
+                            seen_image_urls.add(img.url)
+
+                # 思考增量: 首次发 <think>, 之后只发 delta, 结束时发 </think>
                 if t_delta := chunk.thoughts_delta:
                     full_thoughts += t_delta
+                    think_text = ""
+                    if not thinking_started:
+                        think_text = f"<think>{t_delta}"
+                        thinking_started = True
+                    else:
+                        think_text = t_delta
+                    think_resp = GeminiGenerateContentResponse(
+                        candidates=[
+                            GeminiCandidate(
+                                content=GeminiContent(
+                                    role="model",
+                                    parts=[GeminiPart(text=think_text)],
+                                ),
+                                index=0,
+                            )
+                        ],
+                    )
+                    yield f"data: {orjson.dumps(think_resp.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
 
-                # 文本增量
+                # 文本增量: 如果 thinking 刚结束, 先发送 </think>
                 if text_delta := chunk.text_delta:
+                    if thinking_started:
+                        # 发送 </think> 关闭标签
+                        close_think = GeminiGenerateContentResponse(
+                            candidates=[
+                                GeminiCandidate(
+                                    content=GeminiContent(
+                                        role="model",
+                                        parts=[GeminiPart(text="</think>")],
+                                    ),
+                                    index=0,
+                                )
+                            ],
+                        )
+                        yield f"data: {orjson.dumps(close_think.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
+                        thinking_started = False
                     full_text += text_delta
                     if visible_delta := suppressor.process(text_delta):
                         chunk_resp = GeminiGenerateContentResponse(
@@ -608,6 +697,20 @@ def _create_gemini_streaming_response(
 
         except Exception as e:
             logger.exception(f"[Gemini API] Streaming error: {e}")
+            # 如果已发送 <think> 开始标签, 先补发 </think> 闭合
+            if thinking_started:
+                close_think = GeminiGenerateContentResponse(
+                    candidates=[
+                        GeminiCandidate(
+                            content=GeminiContent(
+                                role="model",
+                                parts=[GeminiPart(text="</think>")],
+                            ),
+                            index=0,
+                        )
+                    ],
+                )
+                yield f"data: {orjson.dumps(close_think.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
             err_resp = _to_gemini_error(500, "Streaming error occurred.", "INTERNAL")
             yield f"data: {orjson.dumps(err_resp.model_dump(mode='json')).decode('utf-8')}\n\n"
             return
@@ -618,6 +721,21 @@ def _create_gemini_streaming_response(
                 full_text = last_chunk.text
             if last_chunk.thoughts:
                 full_thoughts = last_chunk.thoughts
+
+        # 如果 thinking 流还未关闭(没有后续文本), 发送 </think>
+        if thinking_started:
+            close_think = GeminiGenerateContentResponse(
+                candidates=[
+                    GeminiCandidate(
+                        content=GeminiContent(
+                            role="model",
+                            parts=[GeminiPart(text="</think>")],
+                        ),
+                        index=0,
+                    )
+                ],
+            )
+            yield f"data: {orjson.dumps(close_think.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
 
         # 刷新剩余文本
         if remaining_text := suppressor.flush():
@@ -634,61 +752,108 @@ def _create_gemini_streaming_response(
             )
             yield f"data: {orjson.dumps(chunk_resp.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
 
-        # 后处理: 提取 tool calls 等
-        _thoughts, visible_output, storage_output, tool_calls = _process_llm_output(
-            full_thoughts, full_text, structured_requirement
-        )
+        # --- 后处理: 整体保护层, 避免 SSE 尾段硬中断 ---
+        try:
+            # 提取 tool calls 等
+            _thoughts, visible_output, storage_output, tool_calls = _process_llm_output(
+                full_thoughts, full_text, structured_requirement
+            )
 
-        # 发送最终 chunk(含 finishReason 和 usageMetadata)
-        usage_tuple = _calculate_usage(original_messages, visible_output, tool_calls, _thoughts)
-        p_tok, c_tok, t_tok, _r_tok = usage_tuple
-
-        final_parts: list[GeminiPart] = []
-        if tool_calls:
-            for tc in tool_calls:
-                fn = tc.function if hasattr(tc, "function") else tc.get("function", {})
-                fn_name = fn.name if hasattr(fn, "name") else fn.get("name", "")
-                fn_args_raw = (
-                    fn.arguments if hasattr(fn, "arguments") else fn.get("arguments", "{}")
-                )
+            # 图片处理: 使用收集的所有图片 (而非仅 last_chunk)
+            image_store = get_image_store_dir()
+            seen_hashes: set[str] = set()
+            for image in all_images:
                 try:
-                    fn_args = (
-                        orjson.loads(fn_args_raw) if isinstance(fn_args_raw, str) else fn_args_raw
+                    b64_str, _w, _h, fname, file_hash = await _image_to_base64(
+                        image, image_store
                     )
-                except orjson.JSONDecodeError:
-                    fn_args = {}
-                final_parts.append(
-                    GeminiPart(functionCall=GeminiFunctionCall(name=fn_name, args=fn_args))
-                )
+                    if file_hash in seen_hashes:
+                        (image_store / fname).unlink(missing_ok=True)
+                        continue
+                    seen_hashes.add(file_hash)
+                    # 从文件名后缀推导 MIME 类型
+                    suffix = Path(fname).suffix.lower()
+                    mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+                    mime_type = mime_map.get(suffix, "image/png")
+                    # 发送图片 inlineData chunk
+                    img_chunk = GeminiGenerateContentResponse(
+                        candidates=[
+                            GeminiCandidate(
+                                content=GeminiContent(
+                                    role="model",
+                                    parts=[
+                                        GeminiPart(
+                                            inlineData=GeminiInlineData(
+                                                mimeType=mime_type, data=b64_str
+                                            )
+                                        )
+                                    ],
+                                ),
+                                index=0,
+                            )
+                        ],
+                    )
+                    yield f"data: {orjson.dumps(img_chunk.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
+                    # 存储用 markdown URL
+                    token = get_image_token(fname)
+                    img_url = f"{base_url}/images/{fname}?token={token}"
+                    storage_output += f"\n\n![{fname}]({img_url})"
+                except Exception as exc:
+                    logger.warning(f"[Gemini API] Failed to process streaming image: {exc}")
+            # 发送最终 chunk(含 finishReason 和 usageMetadata)
+            usage_tuple = _calculate_usage(original_messages, visible_output, tool_calls, _thoughts)
+            p_tok, c_tok, t_tok, _r_tok = usage_tuple
 
-        final_resp = GeminiGenerateContentResponse(
-            candidates=[
-                GeminiCandidate(
-                    content=GeminiContent(role="model", parts=final_parts) if final_parts else None,
-                    finishReason="STOP",
-                    index=0,
-                )
-            ],
-            usageMetadata=GeminiUsageMetadata(
-                promptTokenCount=p_tok,
-                candidatesTokenCount=c_tok,
-                totalTokenCount=t_tok,
-            ),
-            modelVersion=model_name,
-        )
-        yield f"data: {orjson.dumps(final_resp.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
+            final_parts: list[GeminiPart] = []
+            if tool_calls:
+                for tc in tool_calls:
+                    fn = tc.function if hasattr(tc, "function") else tc.get("function", {})
+                    fn_name = fn.name if hasattr(fn, "name") else fn.get("name", "")
+                    fn_args_raw = (
+                        fn.arguments if hasattr(fn, "arguments") else fn.get("arguments", "{}")
+                    )
+                    try:
+                        fn_args = (
+                            orjson.loads(fn_args_raw) if isinstance(fn_args_raw, str) else fn_args_raw
+                        )
+                    except orjson.JSONDecodeError:
+                        fn_args = {}
+                    final_parts.append(
+                        GeminiPart(functionCall=GeminiFunctionCall(name=fn_name, args=fn_args))
+                    )
 
-        # 持久化会话
-        _persist_conversation(
-            db,
-            model.model_name,
-            client_wrapper.id,
-            session.metadata,
-            messages,
-            storage_output,
-            tool_calls,
-            _thoughts,
-        )
+            final_resp = GeminiGenerateContentResponse(
+                candidates=[
+                    GeminiCandidate(
+                        content=GeminiContent(role="model", parts=final_parts) if final_parts else None,
+                        finishReason="STOP",
+                        index=0,
+                    )
+                ],
+                usageMetadata=GeminiUsageMetadata(
+                    promptTokenCount=p_tok,
+                    candidatesTokenCount=c_tok,
+                    totalTokenCount=t_tok,
+                ),
+                modelVersion=model_name,
+            )
+            yield f"data: {orjson.dumps(final_resp.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
+
+            # 持久化会话
+            _persist_conversation(
+                db,
+                model.model_name,
+                client_wrapper.id,
+                session.metadata,
+                messages,
+                storage_output,
+                tool_calls,
+                _thoughts,
+            )
+        except Exception as exc:
+            logger.exception(f"[Gemini API] Post-processing error: {exc}")
+            err_resp = _to_gemini_error(500, "Post-processing error.", "INTERNAL")
+            yield f"data: {orjson.dumps(err_resp.model_dump(mode='json')).decode('utf-8')}\n\n"
 
     return StreamingResponse(
         generate_stream(),
