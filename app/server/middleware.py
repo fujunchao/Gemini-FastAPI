@@ -119,3 +119,33 @@ def add_cors_middleware(app: FastAPI):
             allow_methods=cors.allow_methods,
             allow_headers=cors.allow_headers,
         )
+
+
+def verify_gemini_api_key(request: Request):
+    """Gemini API 风格鉴权: 支持 x-goog-api-key header, key= 查询参数, 以及 Bearer token。"""
+    if not g_config.server.api_key:
+        return ""
+
+    # 1) x-goog-api-key header
+    api_key = request.headers.get("x-goog-api-key")
+    if api_key:
+        if api_key != g_config.server.api_key:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Wrong API key")
+        return api_key
+
+    # 2) key= 查询参数
+    api_key = request.query_params.get("key")
+    if api_key:
+        if api_key != g_config.server.api_key:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Wrong API key")
+        return api_key
+
+    # 3) 回退到 Authorization: Bearer
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        api_key = auth_header[7:]
+        if api_key != g_config.server.api_key:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Wrong API key")
+        return api_key
+
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing API key")

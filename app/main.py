@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from loguru import logger
 
 from .server.chat import router as chat_router
+from .server.gemini import add_gemini_exception_handlers
+from .server.gemini import router as gemini_router
 from .server.health import router as health_router
 from .server.images import router as images_router
 from .server.middleware import (
@@ -97,8 +99,11 @@ def create_app() -> FastAPI:
     add_cors_middleware(app)
     add_exception_handler(app)
 
+    add_gemini_exception_handlers(app)
+
     app.include_router(health_router, tags=["Health"])
     app.include_router(chat_router, tags=["Chat"])
     app.include_router(images_router, tags=["Images"])
+    app.include_router(gemini_router, tags=["Gemini"])
 
     return app
