@@ -273,9 +273,9 @@ def _to_gemini_response(
     """将内部处理结果转换为 Gemini API 响应。"""
     parts: list[GeminiPart] = []
 
-    # 思考内容 → <think> 标签包裹的 text part
+    # 思考内容 → thought part (Gemini API 原生格式)
     if thoughts:
-        parts.append(GeminiPart(text=f"<think>{thoughts}</think>"))
+        parts.append(GeminiPart(text=thoughts, thought=True))
 
     if visible_text:
         parts.append(GeminiPart(text=visible_text))
@@ -627,7 +627,6 @@ def _create_gemini_streaming_response(
         last_chunk: ModelOutput | None = None
         all_images: list[Any] = []  # 收集所有 chunk 的图片 (url 去重)
         seen_image_urls: set[str] = set()
-        thinking_started = False  # 跟踪是否已发送 <think> 开始标签
         suppressor = StreamingOutputFilter()
 
         try:
@@ -641,21 +640,15 @@ def _create_gemini_streaming_response(
                             all_images.append(img)
                             seen_image_urls.add(img.url)
 
-                # 思考增量: 首次发 <think>, 之后只发 delta, 结束时发 </think>
+                # 思考增量: 使用 Gemini 原生 thought part
                 if t_delta := chunk.thoughts_delta:
                     full_thoughts += t_delta
-                    think_text = ""
-                    if not thinking_started:
-                        think_text = f"<think>{t_delta}"
-                        thinking_started = True
-                    else:
-                        think_text = t_delta
                     think_resp = GeminiGenerateContentResponse(
                         candidates=[
                             GeminiCandidate(
                                 content=GeminiContent(
                                     role="model",
-                                    parts=[GeminiPart(text=think_text)],
+                                    parts=[GeminiPart(text=t_delta, thought=True)],
                                 ),
                                 index=0,
                             )
@@ -663,23 +656,8 @@ def _create_gemini_streaming_response(
                     )
                     yield f"data: {orjson.dumps(think_resp.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
 
-                # 文本增量: 如果 thinking 刚结束, 先发送 </think>
+                # 文本增量
                 if text_delta := chunk.text_delta:
-                    if thinking_started:
-                        # 发送 </think> 关闭标签
-                        close_think = GeminiGenerateContentResponse(
-                            candidates=[
-                                GeminiCandidate(
-                                    content=GeminiContent(
-                                        role="model",
-                                        parts=[GeminiPart(text="</think>")],
-                                    ),
-                                    index=0,
-                                )
-                            ],
-                        )
-                        yield f"data: {orjson.dumps(close_think.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
-                        thinking_started = False
                     full_text += text_delta
                     if visible_delta := suppressor.process(text_delta):
                         chunk_resp = GeminiGenerateContentResponse(
@@ -697,20 +675,6 @@ def _create_gemini_streaming_response(
 
         except Exception as e:
             logger.exception(f"[Gemini API] Streaming error: {e}")
-            # 如果已发送 <think> 开始标签, 先补发 </think> 闭合
-            if thinking_started:
-                close_think = GeminiGenerateContentResponse(
-                    candidates=[
-                        GeminiCandidate(
-                            content=GeminiContent(
-                                role="model",
-                                parts=[GeminiPart(text="</think>")],
-                            ),
-                            index=0,
-                        )
-                    ],
-                )
-                yield f"data: {orjson.dumps(close_think.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
             err_resp = _to_gemini_error(500, "Streaming error occurred.", "INTERNAL")
             yield f"data: {orjson.dumps(err_resp.model_dump(mode='json')).decode('utf-8')}\n\n"
             return
@@ -722,20 +686,6 @@ def _create_gemini_streaming_response(
             if last_chunk.thoughts:
                 full_thoughts = last_chunk.thoughts
 
-        # 如果 thinking 流还未关闭(没有后续文本), 发送 </think>
-        if thinking_started:
-            close_think = GeminiGenerateContentResponse(
-                candidates=[
-                    GeminiCandidate(
-                        content=GeminiContent(
-                            role="model",
-                            parts=[GeminiPart(text="</think>")],
-                        ),
-                        index=0,
-                    )
-                ],
-            )
-            yield f"data: {orjson.dumps(close_think.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
 
         # 刷新剩余文本
         if remaining_text := suppressor.flush():

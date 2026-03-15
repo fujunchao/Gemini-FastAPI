@@ -37,9 +37,10 @@ class GeminiFunctionResponse(BaseModel):
 
 
 class GeminiPart(BaseModel):
-    """Content 中的一个 part, 可能是文本、内嵌数据、函数调用或函数响应。"""
+    """Content 中的一个 part, 可能是文本/思考、内嵌数据、函数调用或函数响应。"""
 
     text: str | None = None
+    thought: bool | None = None
     inlineData: GeminiInlineData | None = None
     functionCall: GeminiFunctionCall | None = None
     functionResponse: GeminiFunctionResponse | None = None
