@@ -99,6 +99,7 @@ def add_gemini_exception_handlers(app):
             content={"detail": exc.errors()},
         )
 
+
 # ---------------------------------------------------------------------------
 # Gemini ↔ 内部格式转换函数
 # ---------------------------------------------------------------------------
@@ -155,6 +156,12 @@ def _gemini_contents_to_messages(
                     ContentItem(type="image_url", image_url={"url": data_url, "detail": "auto"})
                 )
 
+            if part.fileData:
+                file_info: dict[str, Any] = {"url": part.fileData.fileUri}
+                if part.fileData.mimeType:
+                    file_info["mime_type"] = part.fileData.mimeType
+                content_items.append(ContentItem(type="file", file=file_info))
+
             if part.functionCall:
                 call_id = f"call_{uuid.uuid4().hex[:24]}"
                 tool_calls.append(
@@ -195,9 +202,7 @@ def _gemini_contents_to_messages(
                 )
             # 如果同时有文本, 额外追加一条用户消息
             if text_fragments and internal_role != "tool":
-                messages.append(
-                    Message(role=internal_role, content="\n".join(text_fragments))
-                )
+                messages.append(Message(role=internal_role, content="\n".join(text_fragments)))
         elif tool_calls:
             # assistant 消息带 tool_calls
             msg_content = "\n".join(text_fragments) if text_fragments else None
@@ -206,16 +211,16 @@ def _gemini_contents_to_messages(
             # 多模态内容: 按原始顺序构建 content_items
             if content_items:
                 ordered_items: list[ContentItem] = []
-                text_idx, img_idx = 0, 0
+                text_idx, media_idx = 0, 0
                 for part in parts:
                     if part.text is not None and text_idx < len(text_fragments):
                         ordered_items.append(
                             ContentItem(type="text", text=text_fragments[text_idx])
                         )
                         text_idx += 1
-                    elif part.inlineData and img_idx < len(content_items):
-                        ordered_items.append(content_items[img_idx])
-                        img_idx += 1
+                    elif (part.inlineData or part.fileData) and media_idx < len(content_items):
+                        ordered_items.append(content_items[media_idx])
+                        media_idx += 1
                 messages.append(Message(role=internal_role, content=ordered_items))
             else:
                 messages.append(Message(role=internal_role, content="\n".join(text_fragments)))
@@ -295,7 +300,7 @@ def _to_gemini_response(
         parts.append(GeminiPart(functionCall=GeminiFunctionCall(name=fn_name, args=fn_args)))
 
     finish_reason = "STOP"
-    p_tok, c_tok, t_tok, _r_tok = usage_tuple
+    p_tok, c_tok, t_tok, r_tok = usage_tuple
 
     candidate = GeminiCandidate(
         content=GeminiContent(role="model", parts=parts),
@@ -305,8 +310,9 @@ def _to_gemini_response(
 
     usage_meta = GeminiUsageMetadata(
         promptTokenCount=p_tok,
-        candidatesTokenCount=c_tok,
+        candidatesTokenCount=c_tok - r_tok,
         totalTokenCount=t_tok,
+        thoughtsTokenCount=r_tok if r_tok > 0 else None,
     )
 
     return GeminiGenerateContentResponse(
@@ -413,9 +419,10 @@ async def gemini_generate_content(
     structured_requirement = None
     if request.generationConfig:
         gen_cfg = request.generationConfig
-        if gen_cfg.responseMimeType == "application/json" and gen_cfg.responseSchema:
+        schema = gen_cfg.responseSchema or gen_cfg.responseJsonSchema
+        if gen_cfg.responseMimeType == "application/json" and schema:
             structured_requirement = _build_structured_requirement(
-                {"type": "json_schema", "json_schema": {"schema": gen_cfg.responseSchema}}
+                {"type": "json_schema", "json_schema": {"schema": schema}}
             )
 
     extra_instr = [structured_requirement.instruction] if structured_requirement else None
@@ -430,9 +437,7 @@ async def gemini_generate_content(
 
     if session:
         if not remain:
-            err = _to_gemini_error(
-                400, "No new messages to send.", "INVALID_ARGUMENT"
-            )
+            err = _to_gemini_error(400, "No new messages to send.", "INVALID_ARGUMENT")
             return JSONResponse(status_code=400, content=err.model_dump(mode="json"))
 
         input_msgs = _prepare_messages_for_model(
@@ -493,7 +498,13 @@ async def gemini_generate_content(
             seen_hashes.add(file_hash)
             # 从文件名后缀推导 MIME 类型
             suffix = Path(fname).suffix.lower()
-            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+            mime_map = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+                ".gif": "image/gif",
+            }
             mime_type = mime_map.get(suffix, "image/png")
             image_parts.append(
                 GeminiPart(inlineData=GeminiInlineData(mimeType=mime_type, data=b64_str))
@@ -552,9 +563,10 @@ async def gemini_stream_generate_content(
     structured_requirement = None
     if request.generationConfig:
         gen_cfg = request.generationConfig
-        if gen_cfg.responseMimeType == "application/json" and gen_cfg.responseSchema:
+        schema = gen_cfg.responseSchema or gen_cfg.responseJsonSchema
+        if gen_cfg.responseMimeType == "application/json" and schema:
             structured_requirement = _build_structured_requirement(
-                {"type": "json_schema", "json_schema": {"schema": gen_cfg.responseSchema}}
+                {"type": "json_schema", "json_schema": {"schema": schema}}
             )
 
     extra_instr = [structured_requirement.instruction] if structured_requirement else None
@@ -565,9 +577,7 @@ async def gemini_stream_generate_content(
 
     if session:
         if not remain:
-            err = _to_gemini_error(
-                400, "No new messages to send.", "INVALID_ARGUMENT"
-            )
+            err = _to_gemini_error(400, "No new messages to send.", "INVALID_ARGUMENT")
             return JSONResponse(status_code=400, content=err.model_dump(mode="json"))
 
         input_msgs = _prepare_messages_for_model(
@@ -686,7 +696,6 @@ def _create_gemini_streaming_response(
             if last_chunk.thoughts:
                 full_thoughts = last_chunk.thoughts
 
-
         # 刷新剩余文本
         if remaining_text := suppressor.flush():
             chunk_resp = GeminiGenerateContentResponse(
@@ -714,16 +723,20 @@ def _create_gemini_streaming_response(
             seen_hashes: set[str] = set()
             for image in all_images:
                 try:
-                    b64_str, _w, _h, fname, file_hash = await _image_to_base64(
-                        image, image_store
-                    )
+                    b64_str, _w, _h, fname, file_hash = await _image_to_base64(image, image_store)
                     if file_hash in seen_hashes:
                         (image_store / fname).unlink(missing_ok=True)
                         continue
                     seen_hashes.add(file_hash)
                     # 从文件名后缀推导 MIME 类型
                     suffix = Path(fname).suffix.lower()
-                    mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+                    mime_map = {
+                        ".png": "image/png",
+                        ".jpg": "image/jpeg",
+                        ".jpeg": "image/jpeg",
+                        ".webp": "image/webp",
+                        ".gif": "image/gif",
+                    }
                     mime_type = mime_map.get(suffix, "image/png")
                     # 发送图片 inlineData chunk
                     img_chunk = GeminiGenerateContentResponse(
@@ -752,7 +765,7 @@ def _create_gemini_streaming_response(
                     logger.warning(f"[Gemini API] Failed to process streaming image: {exc}")
             # 发送最终 chunk(含 finishReason 和 usageMetadata)
             usage_tuple = _calculate_usage(original_messages, visible_output, tool_calls, _thoughts)
-            p_tok, c_tok, t_tok, _r_tok = usage_tuple
+            p_tok, c_tok, t_tok, r_tok = usage_tuple
 
             final_parts: list[GeminiPart] = []
             if tool_calls:
@@ -764,7 +777,9 @@ def _create_gemini_streaming_response(
                     )
                     try:
                         fn_args = (
-                            orjson.loads(fn_args_raw) if isinstance(fn_args_raw, str) else fn_args_raw
+                            orjson.loads(fn_args_raw)
+                            if isinstance(fn_args_raw, str)
+                            else fn_args_raw
                         )
                     except orjson.JSONDecodeError:
                         fn_args = {}
@@ -775,15 +790,18 @@ def _create_gemini_streaming_response(
             final_resp = GeminiGenerateContentResponse(
                 candidates=[
                     GeminiCandidate(
-                        content=GeminiContent(role="model", parts=final_parts) if final_parts else None,
+                        content=GeminiContent(role="model", parts=final_parts)
+                        if final_parts
+                        else None,
                         finishReason="STOP",
                         index=0,
                     )
                 ],
                 usageMetadata=GeminiUsageMetadata(
                     promptTokenCount=p_tok,
-                    candidatesTokenCount=c_tok,
+                    candidatesTokenCount=c_tok - r_tok,
                     totalTokenCount=t_tok,
+                    thoughtsTokenCount=r_tok if r_tok > 0 else None,
                 ),
                 modelVersion=model_name,
             )
