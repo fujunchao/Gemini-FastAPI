@@ -22,6 +22,13 @@ class GeminiInlineData(BaseModel):
     data: str  # base64
 
 
+class GeminiFileData(BaseModel):
+    """通过 Files API 上传的文件引用。"""
+
+    mimeType: str
+    fileUri: str
+
+
 class GeminiFunctionCall(BaseModel):
     """模型发起的函数调用。"""
 
@@ -44,6 +51,7 @@ class GeminiPart(BaseModel):
     inlineData: GeminiInlineData | None = None
     functionCall: GeminiFunctionCall | None = None
     functionResponse: GeminiFunctionResponse | None = None
+    fileData: GeminiFileData | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +105,14 @@ class GeminiSafetySetting(BaseModel):
     threshold: str
 
 
+class GeminiThinkingConfig(BaseModel):
+    """思考配置(控制模型推理行为)。"""
+
+    includeThoughts: bool | None = None
+    thinkingBudget: int | None = None
+    thinkingLevel: str | None = None  # OFF | LOW | MEDIUM | HIGH
+
+
 class GeminiGenerationConfig(BaseModel):
     """生成参数。"""
 
@@ -107,7 +123,9 @@ class GeminiGenerationConfig(BaseModel):
     stopSequences: list[str] | None = None
     responseMimeType: str | None = None
     responseSchema: dict[str, Any] | None = None
+    responseJsonSchema: dict[str, Any] | None = None
     candidateCount: int | None = None
+    thinkingConfig: GeminiThinkingConfig | None = None
 
 
 class GeminiGenerateContentRequest(BaseModel):
@@ -119,6 +137,7 @@ class GeminiGenerateContentRequest(BaseModel):
     toolConfig: GeminiToolConfig | None = None
     safetySettings: list[GeminiSafetySetting] | None = None
     generationConfig: GeminiGenerationConfig | None = None
+    cachedContent: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +152,58 @@ class GeminiSafetyRating(BaseModel):
     probability: str
 
 
+class GeminiCitationSource(BaseModel):
+    """单条引用来源。"""
+
+    startIndex: int | None = None
+    endIndex: int | None = None
+    uri: str | None = None
+    license: str | None = None
+
+
+class GeminiCitationMetadata(BaseModel):
+    """引用元数据。"""
+
+    citationSources: list[GeminiCitationSource] = Field(default_factory=list)
+
+
+class GeminiGroundingChunkWeb(BaseModel):
+    """溯源来源网页信息。"""
+
+    uri: str | None = None
+    title: str | None = None
+
+
+class GeminiGroundingChunk(BaseModel):
+    """溯源来源块。"""
+
+    web: GeminiGroundingChunkWeb | None = None
+
+
+class GeminiSearchEntryPoint(BaseModel):
+    """搜索入口点。"""
+
+    renderedContent: str | None = None
+    sdkBlob: str | None = None
+
+
+class GeminiGroundingSupport(BaseModel):
+    """溯源支撑片段。"""
+
+    segment: dict[str, Any] | None = None
+    groundingChunkIndices: list[int] = Field(default_factory=list)
+    confidenceScores: list[float] = Field(default_factory=list)
+
+
+class GeminiGroundingMetadata(BaseModel):
+    """溯源元数据(Google Search 等)。"""
+
+    webSearchQueries: list[str] = Field(default_factory=list)
+    groundingChunks: list[GeminiGroundingChunk] = Field(default_factory=list)
+    searchEntryPoint: GeminiSearchEntryPoint | None = None
+    groundingSupports: list[GeminiGroundingSupport] = Field(default_factory=list)
+
+
 class GeminiCandidate(BaseModel):
     """生成候选项。"""
 
@@ -140,6 +211,10 @@ class GeminiCandidate(BaseModel):
     finishReason: str | None = None
     index: int = 0
     safetyRatings: list[GeminiSafetyRating] = Field(default_factory=list)
+    citationMetadata: GeminiCitationMetadata | None = None
+    groundingMetadata: GeminiGroundingMetadata | None = None
+    tokenCount: int | None = None
+    avgLogprobs: float | None = None
 
 
 class GeminiUsageMetadata(BaseModel):
@@ -148,6 +223,9 @@ class GeminiUsageMetadata(BaseModel):
     promptTokenCount: int = 0
     candidatesTokenCount: int = 0
     totalTokenCount: int = 0
+    thoughtsTokenCount: int | None = None
+    cachedContentTokenCount: int | None = None
+    toolUsePromptTokenCount: int | None = None
 
 
 class GeminiGenerateContentResponse(BaseModel):
