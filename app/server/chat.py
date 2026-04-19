@@ -85,7 +85,9 @@ _MISSING_CHAT_ERROR_PATTERNS = (
     # gemini_webapi maps ErrorCode.MODEL_INCONSISTENT (1050) to this message.
     re.compile(r"\bmodel\s+is\s+inconsistent\s+with\s+the\s+conversation\s+history\b"),
     # Defensive pattern for equivalent wording in wrappers/alternate versions.
-    re.compile(r"\bconversation\s+history\b[^\n]{0,120}\b(?:inconsistent|mismatch|does\s+not\s+match)\b"),
+    re.compile(
+        r"\bconversation\s+history\b[^\n]{0,120}\b(?:inconsistent|mismatch|does\s+not\s+match)\b"
+    ),
 )
 
 router = APIRouter()
@@ -920,9 +922,7 @@ async def _send_with_split(
             logger.exception(f"Error sending message to Gemini: {e}")
             raise
 
-    logger.info(
-        f"Message length ({len(text)}) exceeds effective limit ({effective_limit})."
-    )
+    logger.info(f"Message length ({len(text)}) exceeds effective limit ({effective_limit}).")
     logger.info("Converting oversized message to file attachment.")
     file_obj = io.BytesIO(text.encode("utf-8"))
     file_obj.name = "message.txt"
@@ -972,11 +972,7 @@ async def _send_with_internal_fallback(
         )
         return output, session, client
     except Exception as exc:
-        should_fallback = (
-            reused_session
-            and not stream
-            and _is_missing_chat_error(exc)
-        )
+        should_fallback = reused_session and not stream and _is_missing_chat_error(exc)
         if not should_fallback:
             raise
 
@@ -988,7 +984,9 @@ async def _send_with_internal_fallback(
         fallback_input, fallback_files = await _process_conversation_with_compaction(
             full_prepared_messages,
             tmp_dir,
-            allow_summary_compaction=(g_config.gemini.oversized_context_strategy == OversizedContextStrategy.COMPACTION),
+            allow_summary_compaction=(
+                g_config.gemini.oversized_context_strategy == OversizedContextStrategy.COMPACTION
+            ),
             reason="fallback replay",
         )
         output = await _send_with_split(
@@ -1801,7 +1799,8 @@ async def create_chat_completion(
         m_input, files = await _process_conversation_with_compaction(
             input_msgs,
             tmp_dir,
-            allow_summary_compaction=use_google_temporary_mode and (g_config.gemini.oversized_context_strategy == OversizedContextStrategy.COMPACTION),
+            allow_summary_compaction=use_google_temporary_mode
+            and (g_config.gemini.oversized_context_strategy == OversizedContextStrategy.COMPACTION),
             reason="temporary session replay",
         )
 
@@ -1816,7 +1815,11 @@ async def create_chat_completion(
             m_input, files = await _process_conversation_with_compaction(
                 msgs,
                 tmp_dir,
-                allow_summary_compaction=use_google_temporary_mode and (g_config.gemini.oversized_context_strategy == OversizedContextStrategy.COMPACTION),
+                allow_summary_compaction=use_google_temporary_mode
+                and (
+                    g_config.gemini.oversized_context_strategy
+                    == OversizedContextStrategy.COMPACTION
+                ),
                 reason="temporary fresh replay",
             )
         except Exception as e:
@@ -2000,7 +2003,8 @@ async def create_response(
         m_input, files = await _process_conversation_with_compaction(
             msgs,
             tmp_dir,
-            allow_summary_compaction=use_google_temporary_mode and (g_config.gemini.oversized_context_strategy == OversizedContextStrategy.COMPACTION),
+            allow_summary_compaction=use_google_temporary_mode
+            and (g_config.gemini.oversized_context_strategy == OversizedContextStrategy.COMPACTION),
             reason="temporary session replay",
         )
         logger.debug(
@@ -2013,7 +2017,11 @@ async def create_response(
             m_input, files = await _process_conversation_with_compaction(
                 messages,
                 tmp_dir,
-                allow_summary_compaction=use_google_temporary_mode and (g_config.gemini.oversized_context_strategy == OversizedContextStrategy.COMPACTION),
+                allow_summary_compaction=use_google_temporary_mode
+                and (
+                    g_config.gemini.oversized_context_strategy
+                    == OversizedContextStrategy.COMPACTION
+                ),
                 reason="temporary fresh replay",
             )
         except Exception as e:

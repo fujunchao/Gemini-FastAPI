@@ -44,6 +44,7 @@ def app():
         supports_image=False,
         supports_thinking=False,
     )
+
     async def fake_process_conversation(messages, tmp_dir):
         return ["prepared-input"], []
 
@@ -71,11 +72,19 @@ def app():
         patch("app.server.gemini.LMDBConversationStore", return_value=route_store),
         patch("app.server.gemini._get_model_by_name", return_value=route_model) as mock_get_model,
         patch("app.server.gemini._find_reusable_session", return_value=(None, None, None)),
-        patch("app.server.gemini.GeminiClientWrapper.process_conversation", new=AsyncMock(side_effect=fake_process_conversation)),
+        patch(
+            "app.server.gemini.GeminiClientWrapper.process_conversation",
+            new=AsyncMock(side_effect=fake_process_conversation),
+        ),
         patch("app.server.gemini.GeminiClientWrapper.extract_output", return_value="Hello World"),
-        patch("app.server.gemini._send_with_split", new=AsyncMock(side_effect=fake_send_with_split)),
+        patch(
+            "app.server.gemini._send_with_split", new=AsyncMock(side_effect=fake_send_with_split)
+        ),
         patch("app.server.gemini._calculate_usage", return_value=(10, 20, 30, 0)),
-        patch("app.server.gemini._process_llm_output", return_value=(None, "Hello World", "Hello World", [])),
+        patch(
+            "app.server.gemini._process_llm_output",
+            return_value=(None, "Hello World", "Hello World", []),
+        ),
         patch("app.server.gemini._persist_conversation", return_value=None),
     ):
         from app.main import create_app
@@ -128,11 +137,14 @@ def test_generate_content_http_route(app, model_path):
 
 @pytest.mark.parametrize("model_path", MODEL_PATHS)
 def test_stream_generate_content_http_route(app, model_path):
-    with TestClient(app) as client, client.stream(
-        "POST",
-        f"/v1beta/models/{model_path}:streamGenerateContent",
-        json=_request_body(),
-    ) as response:
+    with (
+        TestClient(app) as client,
+        client.stream(
+            "POST",
+            f"/v1beta/models/{model_path}:streamGenerateContent",
+            json=_request_body(),
+        ) as response,
+    ):
         body = "".join(response.iter_text())
 
     app.state.mock_get_model.assert_called_with(MODEL_NAME)
@@ -147,11 +159,14 @@ def test_unknown_model_returns_404(app, model_path):
     from app.server import gemini as gemini_module
 
     app.dependency_overrides[verify_gemini_api_key] = lambda: ""
-    with patch.object(
-        gemini_module,
-        "_get_model_by_name",
-        side_effect=ValueError("Model not found"),
-    ), TestClient(app) as client:
+    with (
+        patch.object(
+            gemini_module,
+            "_get_model_by_name",
+            side_effect=ValueError("Model not found"),
+        ),
+        TestClient(app) as client,
+    ):
         response = client.get(f"/v1beta/models/{model_path}")
 
     assert response.status_code == 404

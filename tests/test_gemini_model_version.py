@@ -49,14 +49,16 @@ class TestModelVersionFormat:
             thoughts=None,
             usage_tuple=(10, 20, 30, 0),
             model_name=model_name,
-            image_parts=None
+            image_parts=None,
         )
 
         assert isinstance(response, GeminiGenerateContentResponse)
-        assert response.modelVersion == "gemini-3-flash", \
+        assert response.modelVersion == "gemini-3-flash", (
             f"modelVersion should be bare model name, got: {response.modelVersion}"
-        assert not response.modelVersion.startswith("models/"), \
+        )
+        assert not response.modelVersion.startswith("models/"), (
             "modelVersion should not start with models/"
+        )
 
     def test_model_version_in_response(self):
         """Verify response contains correct modelVersion format"""
@@ -66,11 +68,11 @@ class TestModelVersionFormat:
             thoughts=None,
             usage_tuple=(5, 8, 13, 0),
             model_name="gemini-1.5-pro",
-            image_parts=[]
+            image_parts=[],
         )
 
         assert response.modelVersion == "gemini-1.5-pro"
-        assert hasattr(response, 'candidates')
+        assert hasattr(response, "candidates")
 
 
 class TestCodePaths:
@@ -85,8 +87,9 @@ class TestCodePaths:
         source = inspect.getsource(gemini)
 
         # Should have 3 calls
-        assert source.count("_strip_model_prefix(model)") == 3, \
+        assert source.count("_strip_model_prefix(model)") == 3, (
             "Should have 3 _strip_model_prefix(model) calls"
+        )
 
     def test_model_version_assignments(self):
         """Verify modelVersion assignment uses model_name"""
@@ -98,14 +101,16 @@ class TestCodePaths:
 
         # Find modelVersion assignments
         # Should use bare model_name, not f"models/{model_name}"
-        model_version_pattern = r'modelVersion\s*=\s*([^\n,)]+)'
+        model_version_pattern = r"modelVersion\s*=\s*([^\n,)]+)"
         matches = re.findall(model_version_pattern, source)
 
         for match in matches:
-            assert "f\"models/" not in match, \
+            assert 'f"models/' not in match, (
                 f"modelVersion should not use f'models/...' format, current: {match}"
-            assert match.strip() == "model_name", \
+            )
+            assert match.strip() == "model_name", (
                 f"modelVersion should be model_name, current: {match}"
+            )
 
 
 if __name__ == "__main__":

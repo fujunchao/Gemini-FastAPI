@@ -318,7 +318,7 @@ def _to_gemini_response(
     return GeminiGenerateContentResponse(
         candidates=[candidate],
         usageMetadata=usage_meta,
-            modelVersion=model_name,
+        modelVersion=model_name,
     )
 
 
