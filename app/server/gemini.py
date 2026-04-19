@@ -363,7 +363,7 @@ async def gemini_list_models(api_key: str = Depends(verify_gemini_api_key)):
     return GeminiModelListResponse(models=gemini_models)
 
 
-@router.get("/v1beta/models/{model}")
+@router.get("/v1beta/models/{model:path}")
 async def gemini_get_model(model: str, api_key: str = Depends(verify_gemini_api_key)):
     """获取单个模型信息(Gemini API 格式)。"""
     model_name = _strip_model_prefix(model)
@@ -388,7 +388,7 @@ async def gemini_get_model(model: str, api_key: str = Depends(verify_gemini_api_
     )
 
 
-@router.post("/v1beta/models/{model}:generateContent")
+@router.post("/v1beta/models/{model:path}:generateContent")
 async def gemini_generate_content(
     model: str,
     request: GeminiGenerateContentRequest,
@@ -535,7 +535,7 @@ async def gemini_generate_content(
     return gemini_resp
 
 
-@router.post("/v1beta/models/{model}:streamGenerateContent")
+@router.post("/v1beta/models/{model:path}:streamGenerateContent")
 async def gemini_stream_generate_content(
     model: str,
     request: GeminiGenerateContentRequest,
