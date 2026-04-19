@@ -1,6 +1,7 @@
 import ast
 import os
 import sys
+from enum import StrEnum
 from typing import Any, Literal
 
 import orjson
@@ -71,6 +72,20 @@ class GeminiModelConfig(BaseModel):
         return v
 
 
+class OversizedContextStrategy(StrEnum):
+    """Strategy for handling oversized context."""
+
+    COMPACTION = "compaction"
+    FILE = "file"
+
+
+class ChatMode(StrEnum):
+    """Chat mode options for Gemini conversation handling."""
+
+    NORMAL = "normal"
+    TEMPORARY = "temporary"
+
+
 class GeminiConfig(BaseModel):
     """Gemini API configuration"""
 
@@ -95,6 +110,14 @@ class GeminiConfig(BaseModel):
         default=1_000_000,
         ge=1,
         description="Maximum characters Gemini Web can accept per request",
+    )
+    oversized_context_strategy: OversizedContextStrategy = Field(
+        default=OversizedContextStrategy.COMPACTION,
+        description="Strategy for oversized context: 'compaction' summarizes older turns, 'file' sends oversized context as attachment",
+    )
+    chat_mode: ChatMode = Field(
+        default=ChatMode.NORMAL,
+        description="Chat mode: 'normal' uses standard chats, 'temporary' uses Google's temporary mode (not saved to account) and enforces an effective input limit of 90% of max_chars_per_request",
     )
 
     @field_validator("models", mode="before")
