@@ -22,6 +22,7 @@ Repository = "https://github.com/Nativu5/Gemini-FastAPI"
 
 [project.optional-dependencies]
 dev = [
+    "httpx>=0.28.1",
     "pytest>=9.0.2",
     "ruff>=0.15.4",
 ]
