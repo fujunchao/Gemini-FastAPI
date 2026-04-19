@@ -318,7 +318,7 @@ def _to_gemini_response(
     return GeminiGenerateContentResponse(
         candidates=[candidate],
         usageMetadata=usage_meta,
-        modelVersion=model_name,
+            modelVersion=f"models/{model_name}",  # 返回 models/ 前缀格式以匹配 Google API 格式
     )
 
 
@@ -803,7 +803,7 @@ def _create_gemini_streaming_response(
                     totalTokenCount=t_tok,
                     thoughtsTokenCount=r_tok if r_tok > 0 else None,
                 ),
-                modelVersion=model_name,
+                modelVersion=f"models/{model_name}",  # 返回 models/ 前缀格式以匹配 Google API 格式
             )
             yield f"data: {orjson.dumps(final_resp.model_dump(mode='json', exclude_none=True)).decode('utf-8')}\n\n"
 
