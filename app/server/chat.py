@@ -851,7 +851,7 @@ def _get_available_models() -> list[ModelData]:
             )
             web_model_count += 1
 
-        # 如果 gemini-webapi 的 Model 枚举为空（Docker 环境导入问题），添加备用模型
+        # 如果 gemini-webapi 的 Model 枚举为空(Docker 环境导入问题),添加备用模型
         if web_model_count == 0:
             logger.warning("[models] gemini-webapi Model enum returned no models, using fallback")
             fallback_models = [
