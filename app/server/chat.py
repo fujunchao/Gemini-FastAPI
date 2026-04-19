@@ -834,6 +834,7 @@ def _get_available_models() -> list[ModelData]:
 
     if strategy == "append":
         custom_ids = {m.model_name for m in custom_models}
+        web_model_count = 0
         for model in Model:
             m_name = model.model_name
             if not m_name or m_name == "unspecified":
@@ -848,6 +849,27 @@ def _get_available_models() -> list[ModelData]:
                     owned_by="gemini-web",
                 )
             )
+            web_model_count += 1
+
+        # 如果 gemini-webapi 的 Model 枚举为空（Docker 环境导入问题），添加备用模型
+        if web_model_count == 0:
+            logger.warning("[models] gemini-webapi Model enum returned no models, using fallback")
+            fallback_models = [
+                "gemini-3-pro",
+                "gemini-3-flash",
+                "gemini-3-flash-thinking",
+                "gemini-3-pro-plus",
+                "gemini-3-flash-plus",
+            ]
+            for m_name in fallback_models:
+                if m_name not in custom_ids:
+                    models_data.append(
+                        ModelData(
+                            id=m_name,
+                            created=now,
+                            owned_by="gemini-web",
+                        )
+                    )
 
     return models_data
 

@@ -359,6 +359,12 @@ def _model_data_to_gemini_info(model_data: Any) -> GeminiModelInfo:
 async def gemini_list_models(api_key: str = Depends(verify_gemini_api_key)):
     """列出所有可用模型(Gemini API 格式)。"""
     models = _get_available_models()
+
+    # 诊断：记录模型数量
+    logger.info(f"[Gemini API] Retrieved {len(models)} models")
+    if not models:
+        logger.warning("[Gemini API] Model list is empty")
+
     gemini_models = [_model_data_to_gemini_info(m) for m in models]
     return GeminiModelListResponse(models=gemini_models)
 
