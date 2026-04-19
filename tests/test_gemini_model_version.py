@@ -1,9 +1,9 @@
-"""测试 Gemini 兼容端点的 modelVersion 和模型ID解析
+"""Test Gemini compatible endpoints' modelVersion and model ID parsing.
 
-本测试验证：
-1. _strip_model_prefix 正确去除 models/ 前缀
-2. _get_model_by_name 使用裸模型名调用
-3. generateContent 和 streamGenerateContent 返回正确的 modelVersion 格式
+This test verifies:
+1. _strip_model_prefix correctly removes the models/ prefix
+2. _get_model_by_name is called with bare model name
+3. generateContent and streamGenerateContent return correct modelVersion format
 """
 
 import sys
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-# 添加项目根目录到路径
+# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.models.gemini_models import GeminiGenerateContentResponse
@@ -19,29 +19,29 @@ from app.server.gemini import _strip_model_prefix, _to_gemini_response
 
 
 class TestStripModelPrefix:
-    """测试 _strip_model_prefix 函数"""
+    """Test _strip_model_prefix function"""
 
     def test_strip_models_prefix(self):
-        """测试能正确去除 models/ 前缀"""
+        """Test that models/ prefix is correctly stripped"""
         assert _strip_model_prefix("models/gemini-3-flash") == "gemini-3-flash"
         assert _strip_model_prefix("models/gemini-1.5-pro") == "gemini-1.5-pro"
 
     def test_keep_bare_name(self):
-        """测试裸模型名保持不变"""
+        """Test that bare model names are kept unchanged"""
         assert _strip_model_prefix("gemini-3-flash") == "gemini-3-flash"
         assert _strip_model_prefix("gemini-1.5-pro") == "gemini-1.5-pro"
 
     def test_other_prefix_unchanged(self):
-        """测试非 models/ 前缀不会被误删"""
+        """Test that non-models/ prefixes are not mistakenly removed"""
         assert _strip_model_prefix("model/gemini-3-flash") == "model/gemini-3-flash"
         assert _strip_model_prefix("some/gemini") == "some/gemini"
 
 
 class TestModelVersionFormat:
-    """测试 modelVersion 输出格式"""
+    """Test modelVersion output format"""
 
     def test_model_version_is_bare_name(self):
-        """验证 modelVersion 是裸模型名，不是带 models/ 前缀的"""
+        """Verify modelVersion is bare model name, not with models/ prefix"""
         model_name = "gemini-3-flash"
         response = _to_gemini_response(
             visible_text="Hi",
@@ -54,14 +54,14 @@ class TestModelVersionFormat:
 
         assert isinstance(response, GeminiGenerateContentResponse)
         assert response.modelVersion == "gemini-3-flash", \
-            f"modelVersion 应该是裸模型名，实际是: {response.modelVersion}"
+            f"modelVersion should be bare model name, got: {response.modelVersion}"
         assert not response.modelVersion.startswith("models/"), \
-            "modelVersion 不应该以 models/ 开头"
+            "modelVersion should not start with models/"
 
     def test_model_version_in_response(self):
-        """验证响应中包含正确格式的 modelVersion"""
+        """Verify response contains correct modelVersion format"""
         response = _to_gemini_response(
-            visible_text="你好世界",
+            visible_text="Hello World",
             tool_calls=[],
             thoughts=None,
             usage_tuple=(5, 8, 13, 0),
@@ -74,38 +74,38 @@ class TestModelVersionFormat:
 
 
 class TestCodePaths:
-    """测试关键代码路径"""
+    """Test key code paths"""
 
     def test_strip_model_prefix_in_routes(self):
-        """验证路由中使用 _strip_model_prefix"""
+        """Verify _strip_model_prefix is used in routes"""
         import inspect
 
         from app.server import gemini
 
         source = inspect.getsource(gemini)
 
-        # 应该有 3 处调用
+        # Should have 3 calls
         assert source.count("_strip_model_prefix(model)") == 3, \
-            "应该有3处 _strip_model_prefix(model) 调用"
+            "Should have 3 _strip_model_prefix(model) calls"
 
     def test_model_version_assignments(self):
-        """验证 modelVersion 赋值使用 model_name"""
+        """Verify modelVersion assignment uses model_name"""
         import re
         from pathlib import Path
 
         gemini_path = Path(__file__).parent.parent / "app" / "server" / "gemini.py"
         source = gemini_path.read_text(encoding="utf-8")
 
-        # 查找 modelVersion 赋值
-        # 应该使用裸 model_name，不是 f"models/{model_name}"
+        # Find modelVersion assignments
+        # Should use bare model_name, not f"models/{model_name}"
         model_version_pattern = r'modelVersion\s*=\s*([^\n,)]+)'
         matches = re.findall(model_version_pattern, source)
 
         for match in matches:
             assert "f\"models/" not in match, \
-                f"modelVersion 不应使用 f'models/...' 格式，当前: {match}"
+                f"modelVersion should not use f'models/...' format, current: {match}"
             assert match.strip() == "model_name", \
-                f"modelVersion 应该是 model_name，当前: {match}"
+                f"modelVersion should be model_name, current: {match}"
 
 
 if __name__ == "__main__":

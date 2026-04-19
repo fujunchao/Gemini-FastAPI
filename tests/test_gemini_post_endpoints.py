@@ -1,31 +1,29 @@
-"""测试 POST Gemini 端点的模型ID解析和响应格式
+"""Test POST Gemini endpoints' model ID parsing and response format.
 
-本测试验证：
-1. POST /v1beta/models/{model}:generateContent 使用 _strip_model_prefix 解析模型
-2. POST /v1beta/models/{model}:streamGenerateContent 使用 _strip_model_prefix 解析模型
-3. _get_model_by_name 接收到的始终是裸模型名（无 models/ 前缀）
-4. 响应中的 modelVersion 格式正确
+This test verifies:
+1. POST /v1beta/models/{model}:generateContent uses _strip_model_prefix to parse model
+2. POST /v1beta/models/{model}:streamGenerateContent uses _strip_model_prefix to parse model
+3. _get_model_by_name always receives bare model name (without models/ prefix)
+4. modelVersion format in response is correct
 """
 
-import pytest
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-# 添加项目根目录到路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import pytest
 
-# 添加项目根目录到路径
+# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 @pytest.fixture
 def app_with_mocked_models():
-    """创建带 mock 模型服务的 FastAPI 应用"""
+    """Create FastAPI app with mocked model services"""
     from app.main import create_app
     from app.utils.config import Config
 
-    # 创建测试配置
+    # Create test config
     test_config = Config(
         gemini=MagicMock(
             model_strategy="fallback",
@@ -45,21 +43,21 @@ def app_with_mocked_models():
 
 
 class TestGenerateContentEndpoint:
-    """测试非流式生成端点"""
+    """Test non-streaming generation endpoint"""
 
     @patch("app.server.gemini._get_model_by_name")
     def test_model_name_with_prefix(
         self, mock_get_model
     ):
-        """测试 URL 中带 models/ 前缀时，_get_model_by_name 接收裸名"""
-        # Mock 模型
+        """Test that _get_model_by_name receives bare name when URL has models/ prefix"""
+        # Mock model
         mock_model = MagicMock()
         mock_model.model_name = "gemini-3-flash"
         mock_model.supports_image = False
         mock_model.supports_thinking = False
         mock_get_model.return_value = mock_model
-        
-        # Mock 客户端池
+
+        # Mock client pool
         mock_client = MagicMock()
         mock_client.process_message.return_value = MagicMock(
             text_delta=None,
@@ -72,26 +70,26 @@ class TestGenerateContentEndpoint:
         mock_pool_instance.acquire = AsyncMock(return_value=MagicMock(
             client=mock_client
         ))
-        
+
         with patch("app.services.GeminiClientPool") as mock_pool, \
              patch("app.services.LMDBConversationStore") as mock_db:
             mock_pool.return_value = mock_pool_instance
             mock_db.return_value = MagicMock()
-            
-            # 直接调用 GeminiClientWrapper.process_message 模拟处理
-            from app.server.gemini import _strip_model_prefix, _get_model_by_name
+
+            # Simulate processing with prefixed model name
+            from app.server.gemini import _strip_model_prefix
             model = "models/gemini-3-flash"
             stripped = _strip_model_prefix(model)
-            # 验证 _strip_model_prefix 正确移除前缀
+            # Verify _strip_model_prefix correctly removes prefix
             assert stripped == "gemini-3-flash"
-        # 验证 _get_model_by_name 接收的是裸名（通过 mock 验证逻辑）
-        mock_get_model.assert_not_called()  # 当前测试不直接调用，只是验证前置处理逻辑
+            # Verify _get_model_by_name receives bare name (by mock verification logic)
+            mock_get_model.assert_not_called()  # current test doesn't directly call, just verifies preprocessing
 
     @patch("app.server.gemini._get_model_by_name")
     def test_model_name_without_prefix(
         self, mock_get_model
     ):
-        """测试 URL 中不带 models/ 前缀时，_get_model_by_name 直接接收裸名"""
+        """Test that _get_model_by_name directly receives bare name when URL has no models/ prefix"""
         mock_model = MagicMock()
         mock_model.id = "gemini-3-flash"
         mock_model.model_name = "gemini-3-flash"
@@ -99,29 +97,29 @@ class TestGenerateContentEndpoint:
         mock_model.supports_thinking = False
         mock_get_model.return_value = mock_model
 
-        # 验证函数行为
+        # Verify function behavior
         from app.server.gemini import _strip_model_prefix
         stripped = _strip_model_prefix("gemini-3-flash")
         assert stripped == "gemini-3-flash"
 
     def test_strip_model_prefix_called(self):
-        """验证 _strip_model_prefix 在请求处理中被调用"""
-        from app.server import gemini
-
-        # 检查源码中确实调用了 _strip_model_prefix
+        """Verify _strip_model_prefix is called in request processing"""
+        # Check source code does call _strip_model_prefix
         import inspect
+
+        from app.server import gemini
         source = inspect.getsource(gemini.gemini_generate_content)
         assert "_strip_model_prefix(model)" in source
 
 
 class TestStreamGenerateContentEndpoint:
-    """测试流式生成端点"""
+    """Test streaming generation endpoint"""
 
     @patch("app.server.gemini._get_model_by_name")
     def test_stream_model_name_with_prefix(
         self, mock_get_model
     ):
-        """测试流式端点 URL 中带 models/ 前缀时的处理"""
+        """Test that streaming endpoint handles models/ prefix in URL"""
         mock_model = MagicMock()
         mock_model.id = "gemini-3-flash"
         mock_model.model_name = "gemini-3-flash"
@@ -129,7 +127,7 @@ class TestStreamGenerateContentEndpoint:
         mock_model.supports_thinking = False
         mock_get_model.return_value = mock_model
 
-        # 验证 _strip_model_prefix 被调用
+        # Verify _strip_model_prefix is called
         from app.server.gemini import _strip_model_prefix
         result = _strip_model_prefix("models/gemini-3-flash")
         assert result == "gemini-3-flash"
@@ -138,14 +136,7 @@ class TestStreamGenerateContentEndpoint:
     def test_stream_model_version_in_final_chunk(
         self, mock_get_model
     ):
-        """验证流式响应最终 chunk 的 modelVersion 格式"""
-        from app.server.gemini import _create_gemini_streaming_response
-
-        mock_model = MagicMock()
-        mock_model.model_name = "gemini-3-flash"
-        mock_get_model.return_value = mock_model
-
-        # 模拟流式生成器的最终处理
+        """Verify streaming response final chunk's modelVersion format"""
         from app.server.gemini import _strip_model_prefix
         model_name = "gemini-3-flash"
         stripped = _strip_model_prefix(f"models/{model_name}")
@@ -155,10 +146,10 @@ class TestStreamGenerateContentEndpoint:
 
 
 class TestModelVersionFormat:
-    """测试响应中的 modelVersion 格式"""
+    """Test modelVersion format in response"""
 
     def test_non_streaming_model_version(self):
-        """验证非流式响应 modelVersion 是裸模型名"""
+        """Verify non-streaming response modelVersion is bare model name"""
         from app.server.gemini import _to_gemini_response
 
         response = _to_gemini_response(
@@ -175,11 +166,11 @@ class TestModelVersionFormat:
 
 
 class TestErrorHandling:
-    """测试错误处理正确使用裸模型名"""
+    """Test error handling correctly uses bare model name"""
 
     @patch("app.server.gemini._get_model_by_name")
     def test_unknown_model_error(self, mock_get_model):
-        """测试未知模型错误时，模型名处理正确"""
+        """Test that model name is correctly handled on unknown model error"""
         mock_get_model.side_effect = ValueError("Model 'unknown-model' not found")
 
         from app.server.gemini import _strip_model_prefix
